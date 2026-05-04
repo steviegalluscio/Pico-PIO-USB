@@ -253,18 +253,13 @@ static int usb_setup_transaction(pio_port_t *pp, endpoint_t *ep);
 static int usb_in_transaction(pio_port_t *pp, endpoint_t *ep);
 static int usb_out_transaction(pio_port_t *pp, endpoint_t *ep);
 
-void __not_in_flash_func(pio_usb_host_frame)(void) {
-  if (!timer_active) {
-    return;
-  }
 
-  pio_port_t *pp = PIO_USB_PIO_PORT(0);
-
+void __not_in_flash_func(pio_usb_host_send_sof_keepalive)(pio_port_t *pp, bool skip_connection_check) {
   // Send SOF
   for (int root_idx = 0; root_idx < PIO_USB_ROOT_PORT_CNT; root_idx++) {
     root_port_t *root = PIO_USB_ROOT_PORT(root_idx);
     if (!(root->initialized && root->connected && !root->suspended &&
-          connection_check(root))) {
+          (skip_connection_check || connection_check(root)))) {
       continue;
     }
     configure_root_port(pp, root);
@@ -276,6 +271,28 @@ void __not_in_flash_func(pio_usb_host_frame)(void) {
       pio_usb_bus_usb_transfer(pp, keepalive_encoded, 1);
     }
   }
+}
+
+void __not_in_flash_func(pio_usb_host_advance_sof)(void) {
+  sof_count++;
+
+  // SOF counter is 11-bit
+  uint16_t const sof_count_11b = sof_count & 0x7ff;
+  sof_packet[2] = sof_count_11b & 0xff;
+  sof_packet[3] = (calc_usb_crc5(sof_count_11b) << 3) | (sof_count_11b >> 8);
+  sof_packet_encoded_len =
+      pio_usb_ll_encode_tx_data(sof_packet, sizeof(sof_packet), sof_packet_encoded);
+}
+
+
+void __not_in_flash_func(pio_usb_host_frame)(void) {
+  if (!timer_active) {
+    return;
+  }
+
+  pio_port_t *pp = PIO_USB_PIO_PORT(0);
+
+  pio_usb_host_send_sof_keepalive(pp, false);
 
   // Carry out all queued endpoint transaction
   for (int root_idx = 0; root_idx < PIO_USB_ROOT_PORT_CNT; root_idx++) {
@@ -350,14 +367,7 @@ void __not_in_flash_func(pio_usb_host_frame)(void) {
     }
   }
 
-  sof_count++;
-
-  // SOF counter is 11-bit
-  uint16_t const sof_count_11b = sof_count & 0x7ff;
-  sof_packet[2] = sof_count_11b & 0xff;
-  sof_packet[3] = (calc_usb_crc5(sof_count_11b) << 3) | (sof_count_11b >> 8);
-  sof_packet_encoded_len =
-      pio_usb_ll_encode_tx_data(sof_packet, sizeof(sof_packet), sof_packet_encoded);
+  pio_usb_host_advance_sof();
 }
 
 static bool __no_inline_not_in_flash_func(sof_timer)(repeating_timer_t *_rt) {
@@ -367,6 +377,16 @@ static bool __no_inline_not_in_flash_func(sof_timer)(repeating_timer_t *_rt) {
 
   return true;
 }
+
+void __not_in_flash_func(pio_usb_host_frame_keepalive)(void) {
+  if (!timer_active) {
+    return;
+  }
+  pio_port_t *pp = PIO_USB_PIO_PORT(0);
+  pio_usb_host_send_sof_keepalive(pp, true);
+  pio_usb_host_advance_sof();
+}
+
 
 //--------------------------------------------------------------------+
 // Host Controller functions
